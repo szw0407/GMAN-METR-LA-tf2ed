@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--val_ratio', type=float, default=0.1, help='validation set ratio')
     parser.add_argument('--test_ratio', type=float, default=0.2, help='testing set ratio')
     # 加速：增大 batch_size，减少 max_epoch，减少 patience
-    parser.add_argument('--batch_size', type=int, default=96, help='batch size (default 128 for speed)')
+    parser.add_argument('--batch_size', type=int, default=32, help='batch size (default 32 for speed)')
     parser.add_argument('--max_epoch', type=int, default=100, help='epoch to run (default 30 for speed)')
     parser.add_argument('--patience', type=int, default=5, help='patience for early stop (default 3 for speed)')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='initial learning rate')
