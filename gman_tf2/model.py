@@ -190,14 +190,16 @@ class TransformAttention(Layer):
         return X
 
 class GMAN(tf.keras.Model):
-    def __init__(self, args, SE):
-        super(GMAN, self).__init__()
+    def __init__(self, args, SE, mean, std, **kwargs):
+        super(GMAN, self).__init__(**kwargs)
         self.L = args.L
         self.P = args.P
         self.Q = args.Q
         self.T = 24 * 60 // args.time_slot
         D = args.K * args.d
         self.SE = tf.constant(SE, dtype=tf.float32)
+        self.mean = mean
+        self.std = std
         
         self.fc_x = FC([D, D], [tf.nn.relu, None])
         self.st_embedding = STEmbedding(D)
@@ -225,3 +227,39 @@ class GMAN(tf.keras.Model):
 
         X = self.fc_out(X, training=training)
         return tf.squeeze(X, axis=3)
+
+    def train_step(self, data):
+        x, y = data
+        with tf.GradientTape() as tape:
+            y_pred = self(x, training=True)
+            y_pred = y_pred * self.std + self.mean
+            loss = self.compute_loss(y=y, y_pred=y_pred)
+        
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        
+        for metric in self.metrics:
+            if metric.name == "loss":
+                metric.update_state(loss)
+            else:
+                metric.update_state(y, y_pred)
+        return {m.name: m.result() for m in self.metrics}
+
+    def test_step(self, data):
+        x, y = data
+        y_pred = self(x, training=False)
+        y_pred = y_pred * self.std + self.mean
+        loss = self.compute_loss(y=y, y_pred=y_pred)
+        
+        for metric in self.metrics:
+            if metric.name == "loss":
+                metric.update_state(loss)
+            else:
+                metric.update_state(y, y_pred)
+        return {m.name: m.result() for m in self.metrics}
+
+    def predict_step(self, data):
+        x = data[0]
+        y_pred = self(x, training=False)
+        return y_pred * self.std + self.mean
