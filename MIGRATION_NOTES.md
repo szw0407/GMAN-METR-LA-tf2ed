@@ -8,7 +8,7 @@ This project has been successfully migrated from legacy TensorFlow/Keras code to
 
 ### 1. Modern TensorFlow 2 / Keras 3 API
 
-- **Removed all deprecated APIs**: Updated to use modern Keras 3 imports (`import keras` instead of `from tensorflow import keras`)
+- **Removed all deprecated APIs**: Updated to use modern Keras 3 imports (`import keras`)
 - **Modern layers**: All custom layers now inherit from `keras.layers.Layer`
 - **Modern model**: GMAN model uses `keras.Model` with custom `train_step`, `test_step`, and `predict_step`
 - **Modern optimizers**: Using `keras.optimizers.Adam` with learning rate schedules
@@ -17,13 +17,14 @@ This project has been successfully migrated from legacy TensorFlow/Keras code to
 
 ### 2. Mixed Precision Training (Float16)
 
-**Enabled by default** for better performance on Apple M4 GPU:
+**Enabled by default** for better performance on Apple M4 GPU, and NVIDIA GPUs:
 
 ```python
 keras.mixed_precision.set_global_policy('mixed_float16')
 ```
 
-#### Key mixed precision features:
+#### Key mixed precision features
+
 - **LossScaleOptimizer**: Automatically wraps the optimizer to prevent gradient underflow
 - **Gradient clipping**: Added `tf.clip_by_global_norm(gradients, 5.0)` for stability
 - **Dtype consistency**: All operations use `tf.ops` to ensure proper dtype handling
@@ -33,14 +34,16 @@ keras.mixed_precision.set_global_policy('mixed_float16')
 
 **ALL features are normalized** to prevent overflow in mixed precision training:
 
-#### Traffic Data Normalization:
+#### Traffic Data Normalization
+
 ```python
 mean, std = np.mean(trainX), np.std(trainX)
 std = np.maximum(std, 1e-5)  # Prevent division by zero
 trainX = (trainX - mean) / std
 ```
 
-#### Spatial Embedding Normalization:
+#### Spatial Embedding Normalization
+
 ```python
 SE_mean, SE_std = np.mean(SE), np.std(SE)
 SE_std = np.maximum(SE_std, 1e-5)
@@ -48,6 +51,7 @@ SE = (SE - SE_mean) / SE_std
 ```
 
 This ensures that:
+
 - ✅ No numerical overflow in float16 computations
 - ✅ Better gradient flow during training
 - ✅ Faster convergence
@@ -55,7 +59,8 @@ This ensures that:
 
 ### 4. Model Architecture Improvements
 
-#### Custom Loss Function:
+#### Custom Loss Function
+
 ```python
 class MaskedMAELoss(keras.losses.Loss):
     def call(self, y_true, y_pred):
@@ -65,7 +70,8 @@ class MaskedMAELoss(keras.losses.Loss):
         # ... masked computation ...
 ```
 
-#### Custom Training Loop:
+#### Custom Training Loop
+
 ```python
 def train_step(self, data):
     with tf.GradientTape() as tape:
@@ -87,12 +93,13 @@ def train_step(self, data):
 
 - ❌ Removed GPU availability checks (M4 GPU is always available)
 - ❌ Removed legacy TF1.x patterns
-- ❌ Removed unnecessary type annotations that caused Pylance errors
+- ❌ Removed unnecessary type annotations that caused Pylance errors. Now it has no errors (partly by `# type: ignore` comments).
 - ❌ Removed deprecated `tf.keras` imports (replaced with `keras`)
 
 ### 6. Fixed Implementation Errors
 
-#### GatedFusion dtype consistency:
+#### GatedFusion dtype consistency
+
 ```python
 def call(self, HS, HT, training=None):
     z = tf.nn.sigmoid(tf.add(XS, XT))
@@ -101,7 +108,8 @@ def call(self, HS, HT, training=None):
     H = tf.add(tf.multiply(z, HS), tf.multiply(tf.subtract(one, z), HT))
 ```
 
-#### TemporalAttention mask dtype:
+#### TemporalAttention mask dtype
+
 ```python
 if self.mask:
     mask_matrix = tf.linalg.band_part(
@@ -113,7 +121,7 @@ if self.mask:
 
 ## File Changes
 
-### Modified Files:
+### Modified Files
 
 1. **`model.py`**:
    - Migrated all layers to Keras 3 API
@@ -136,25 +144,15 @@ if self.mask:
 
 ## Usage
 
-### Training with Mixed Precision (Default):
+### Training with Mixed Precision (Default)
+
 ```bash
-cd gmantf22
-python train.py
+python gmantf22/train.py
 ```
 
-### Training with Float32 (Optional):
-```bash
-python train.py --use_mixed_precision False
-```
+### Custom Configuration
 
-### Custom Configuration:
-```bash
-python train.py \
-    --max_epoch 100 \
-    --batch_size 32 \
-    --learning_rate 0.001 \
-    --use_mixed_precision True
-```
+We have totally disabled are command line arguments, and all configurations are now in `gmantf22/config.py`. It has a `GMANConfig` class using `pydantic` for easy configuration and validation.
 
 ## Performance Benefits
 
@@ -167,6 +165,7 @@ python train.py \
 ## Verification
 
 The model has been tested and verified to:
+
 - ✅ Build successfully with 913,345 parameters
 - ✅ Train with mixed precision (float16) on Apple M4 GPU
 - ✅ No numerical overflow or underflow
@@ -176,6 +175,6 @@ The model has been tested and verified to:
 ## References
 
 - GMAN Paper: "GMAN: A Graph Multi-Attention Network for Traffic Prediction" (AAAI-2020)
-- TensorFlow 2: https://www.tensorflow.org/
-- Keras 3: https://keras.io/
-- Mixed Precision Training: https://www.tensorflow.org/guide/mixed_precision
+- TensorFlow 2: <https://www.tensorflow.org/>
+- Keras 3: <https://keras.io/>
+- Mixed Precision Training: <https://www.tensorflow.org/guide/mixed_precision>

@@ -1,9 +1,12 @@
 import logging
 from pathlib import Path
 
+
 import keras
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
+import datetime
 
 from model import GMAN, MaskedMAELoss
 from utils import GMANConfig, load_data, metric
@@ -85,6 +88,10 @@ def build_and_train_model(
     logging.info("**** Training model ****")
 
     # Modern callbacks
+
+    # TensorBoard log dir
+    log_dir = f"logs/fit/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    tb_callback = keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
     callbacks = [
         keras.callbacks.EarlyStopping(
             monitor="val_loss",
@@ -103,9 +110,11 @@ def build_and_train_model(
         keras.callbacks.ReduceLROnPlateau(
             monitor="val_loss", factor=0.7, patience=3, min_lr=1e-6, verbose=1
         ),
+        tb_callback,
     ]
 
     # Training
+
     history = model.fit(
         train_ds,
         epochs=max_epoch,
@@ -113,6 +122,34 @@ def build_and_train_model(
         callbacks=callbacks,
     )
     logging.info("Model training complete.")
+
+    # 可视化训练过程
+    fig, ax = plt.subplots(1, 2, figsize=(12, 5))
+    ax[0].plot(history.history['loss'], label='Train Loss')
+    ax[0].plot(history.history['val_loss'], label='Val Loss')
+    ax[0].set_title('Loss')
+    ax[0].set_xlabel('Epoch')
+    ax[0].set_ylabel('Loss')
+    ax[0].legend()
+    if 'mae' in history.history:
+        ax[1].plot(history.history['mae'], label='Train MAE')
+        ax[1].plot(history.history['val_mae'], label='Val MAE')
+    if 'mape' in history.history:
+        ax[1].plot(history.history['mape'], label='Train MAPE')
+        ax[1].plot(history.history['val_mape'], label='Val MAPE')
+    if 'rmse' in history.history:
+        ax[1].plot(history.history['rmse'], label='Train RMSE')
+        ax[1].plot(history.history['val_rmse'], label='Val RMSE')
+    ax[1].set_title('Metrics')
+    ax[1].set_xlabel('Epoch')
+    ax[1].set_ylabel('Value')
+    ax[1].legend()
+    plt.tight_layout()
+    fig_path = f"{log_dir}/training_curves.png"
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    plt.savefig(fig_path)
+    plt.close(fig)
+    logging.info(f"Training curves saved to {fig_path}")
     return history
 
 
