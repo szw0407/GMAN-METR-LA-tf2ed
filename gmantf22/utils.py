@@ -54,8 +54,8 @@ def seq2instance(data, P, Q):
 
 def load_data(args):
     """
-    Load and preprocess data.
-    参照原始模板：使用Time.freq.delta.total_seconds()计算时间
+    Load and preprocess data with comprehensive normalization for mixed precision.
+    All features are normalized to prevent overflow in mixed_float16.
     """
     # 验证文件存在
     if not os.path.exists(args.traffic_file):
@@ -91,14 +91,17 @@ def load_data(args):
     valX, valY = seq2instance(val, args.P, args.Q)
     testX, testY = seq2instance(test, args.P, args.Q)
 
-    # Normalization - 只归一化X，不归一化Y（参照原始模板）
+    # Comprehensive normalization for mixed precision (prevent overflow)
+    # Using robust standardization (mean and std from training set only)
     mean, std = np.mean(trainX), np.std(trainX)
+    std = np.maximum(std, 1e-5)  # Prevent division by zero
+    
     trainX = (trainX - mean) / std
     valX = (valX - mean) / std
     testX = (testX - mean) / std
-    # trainY, valY, testY 保持原始尺度
+    # trainY, valY, testY 保持原始尺度用于评估
 
-    # Spatial Embedding
+    # Spatial Embedding with normalization
     try:
         with open(args.SE_file, mode='r') as f:
             lines = f.readlines()
@@ -109,7 +112,14 @@ def load_data(args):
                 temp = line.strip().split(' ')
                 index = int(temp[0])
                 SE[index] = [float(ch) for ch in temp[1:]]
+        
+        # Normalize spatial embeddings for mixed precision stability
+        SE_mean, SE_std = np.mean(SE), np.std(SE)
+        SE_std = np.maximum(SE_std, 1e-5)
+        SE = (SE - SE_mean) / SE_std
+        
         print(f"Loaded spatial embedding: {SE.shape}")
+        print(f"SE normalized - mean: {SE_mean:.4f}, std: {SE_std:.4f}")
     except Exception as e:
         raise ValueError(f"Error loading SE file: {e}")
 

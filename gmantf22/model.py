@@ -1,10 +1,15 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Layer, Dropout, BatchNormalization
+import keras
+from keras import layers, ops
 
-class FC(Layer):
-    """严格按照原版逻辑实现"""
-    def __init__(self, units, activations, use_bias=True, drop=None, bn=False):
-        super(FC, self).__init__()
+
+class FC(layers.Layer):
+    """
+    Fully Connected layer with modern Keras 3 API.
+    Supports mixed precision training with proper normalization.
+    """
+    def __init__(self, units, activations, use_bias=True, drop=None, bn=False, **kwargs):
+        super(FC, self).__init__(**kwargs)
         if isinstance(units, int):
             units = [units]
             activations = [activations]
@@ -18,29 +23,36 @@ class FC(Layer):
         self.bn_layers = []
         
         for num_unit, activation in zip(units, activations):
-            # Conv层：按传入的use_bias决定
+            # Use modern Keras 3 Conv2D - dtype will be inherited from mixed precision policy
             self.conv_layers.append(
-                tf.keras.layers.Conv2D(
+                layers.Conv2D(
                     filters=num_unit,
-                    kernel_size=[1, 1],
-                    strides=[1, 1],
-                    padding='VALID',
+                    kernel_size=(1, 1),
+                    strides=(1, 1),
+                    padding='valid',
                     use_bias=use_bias,
                     activation=None,
                     kernel_initializer='glorot_uniform'
+                    # Don't specify dtype - let mixed precision policy handle it
                 )
             )
             
-            # BN层（如果需要且有activation）
+            # BatchNormalization for stability
             if activation is not None and bn:
-                self.bn_layers.append(BatchNormalization(momentum=0.9))
+                self.bn_layers.append(
+                    layers.BatchNormalization(
+                        momentum=0.9,
+                        epsilon=1e-5
+                        # Don't specify dtype - let mixed precision policy handle it
+                    )
+                )
             else:
                 self.bn_layers.append(None)
                 
         self.activations = activations
         
         if self.drop is not None:
-            self.dropout_layer = Dropout(drop)
+            self.dropout_layer = layers.Dropout(drop)
 
     def call(self, x, training=None):
         for conv, bn_layer, activation in zip(self.conv_layers, self.bn_layers, self.activations):
@@ -57,59 +69,70 @@ class FC(Layer):
         return x
 
 
-class MaskedMAELoss(tf.keras.losses.Loss):
-    """修复：添加mask处理的MAE损失"""
+class MaskedMAELoss(keras.losses.Loss):
+    """
+    Masked Mean Absolute Error loss with proper handling for mixed precision.
+    """
+    def __init__(self, **kwargs):
+        super(MaskedMAELoss, self).__init__(**kwargs)
+    
     def call(self, y_true, y_pred):
-        compute_dtype = y_pred.dtype
+        # Convert to float32 for loss computation (critical for mixed precision)
+        y_true = ops.cast(y_true, 'float32')
+        y_pred = ops.cast(y_pred, 'float32')
         
-        mask = tf.not_equal(y_true, 0)
-        mask = tf.cast(mask, compute_dtype)
+        # Create mask for non-zero values
+        mask = ops.not_equal(y_true, 0.0)
+        mask = ops.cast(mask, 'float32')
         
-        mask_mean = tf.reduce_mean(mask)
-        mask = tf.where(
-            tf.math.is_finite(mask / mask_mean),
-            mask / mask_mean,
-            tf.zeros_like(mask)
-        )
+        # Avoid division by zero
+        mask_sum = ops.sum(mask)
+        mask_sum = ops.maximum(mask_sum, 1.0)
         
-        mae = tf.abs(y_pred - y_true)
+        # Compute masked MAE
+        mae = ops.abs(y_pred - y_true)
         masked_mae = mae * mask
         
-        masked_mae = tf.where(
-            tf.math.is_finite(masked_mae),
-            masked_mae,
-            tf.zeros_like(masked_mae)
-        )
+        # Safe mean computation
+        loss = ops.sum(masked_mae) / mask_sum
         
-        return tf.cast(tf.reduce_mean(masked_mae), tf.float32)
+        # Ensure finite values
+        loss = ops.where(ops.isfinite(loss), loss, 0.0)
+        
+        return loss
 
 
-class STEmbedding(Layer):
-    def __init__(self, D, bn=False):
-        super(STEmbedding, self).__init__()
+class STEmbedding(layers.Layer):
+    """Spatial-Temporal Embedding with normalization support"""
+    def __init__(self, D, bn=False, **kwargs):
+        super(STEmbedding, self).__init__(**kwargs)
         self.D = D
         self.fc_se = FC(units=[D, D], activations=[tf.nn.relu, None], bn=bn)
         self.fc_te = FC(units=[D, D], activations=[tf.nn.relu, None], bn=bn)
 
     def call(self, SE, TE, T, training=None):
+        # Process spatial embedding
         SE = tf.expand_dims(tf.expand_dims(SE, axis=0), axis=0)
         SE = self.fc_se(SE, training=training)
         
+        # Process temporal embedding  
         dayofweek = tf.one_hot(TE[..., 0], depth=7)
         timeofday = tf.one_hot(TE[..., 1], depth=T)
         TE = tf.concat((dayofweek, timeofday), axis=-1)
         TE = tf.expand_dims(TE, axis=2)
         TE = self.fc_te(TE, training=training)
+        
         return tf.add(SE, TE)
 
 
-class SpatialAttention(Layer):
-    def __init__(self, K, d, bn=False):  # ✅ 统一用bn
-        super(SpatialAttention, self).__init__()
+class SpatialAttention(layers.Layer):
+    """Multi-head Spatial Attention with modern Keras 3"""
+    def __init__(self, K, d, bn=False, **kwargs):
+        super(SpatialAttention, self).__init__(**kwargs)
         self.K = K
         self.d = d
         self.D = K * d
-        self.query = FC(self.D, tf.nn.relu, bn=bn)  # ✅ 传递bn
+        self.query = FC(self.D, tf.nn.relu, bn=bn)
         self.key = FC(self.D, tf.nn.relu, bn=bn)
         self.value = FC(self.D, tf.nn.relu, bn=bn)
         self.fc = FC([self.D, self.D], [tf.nn.relu, None], bn=bn)
@@ -120,28 +143,33 @@ class SpatialAttention(Layer):
         key = self.key(X_, training=training)
         value = self.value(X_, training=training)
 
+        # Multi-head split
         query = tf.concat(tf.split(query, self.K, axis=-1), axis=0)
         key = tf.concat(tf.split(key, self.K, axis=-1), axis=0)
         value = tf.concat(tf.split(value, self.K, axis=-1), axis=0)
 
+        # Scaled dot-product attention
         attention = tf.matmul(query, key, transpose_b=True)
-        attention /= (self.d ** 0.5)
+        attention = attention / tf.sqrt(tf.cast(self.d, attention.dtype))
         attention = tf.nn.softmax(attention, axis=-1)
 
+        # Apply attention
         X = tf.matmul(attention, value)
         X = tf.concat(tf.split(X, self.K, axis=0), axis=-1)
         X = self.fc(X, training=training)
+        
         return X
 
 
-class TemporalAttention(Layer):
-    def __init__(self, K, d, bn=False, mask=True):  # ✅ 统一用bn
-        super(TemporalAttention, self).__init__()
+class TemporalAttention(layers.Layer):
+    """Multi-head Temporal Attention with optional masking"""
+    def __init__(self, K, d, bn=False, mask=True, **kwargs):
+        super(TemporalAttention, self).__init__(**kwargs)
         self.K = K
         self.d = d
         self.D = K * d
         self.mask = mask
-        self.query = FC(self.D, tf.nn.relu, bn=bn)  # ✅ 传递bn
+        self.query = FC(self.D, tf.nn.relu, bn=bn)
         self.key = FC(self.D, tf.nn.relu, bn=bn)
         self.value = FC(self.D, tf.nn.relu, bn=bn)
         self.fc = FC([self.D, self.D], [tf.nn.relu, None], bn=bn)
@@ -152,35 +180,44 @@ class TemporalAttention(Layer):
         key = self.key(X_, training=training)
         value = self.value(X_, training=training)
 
+        # Multi-head split
         query = tf.concat(tf.split(query, self.K, axis=-1), axis=0)
         key = tf.concat(tf.split(key, self.K, axis=-1), axis=0)
         value = tf.concat(tf.split(value, self.K, axis=-1), axis=0)
 
+        # Transpose for temporal attention
         query = tf.transpose(query, perm=(0, 2, 1, 3))
         key = tf.transpose(key, perm=(0, 2, 3, 1))
         value = tf.transpose(value, perm=(0, 2, 1, 3))
 
+        # Scaled dot-product attention
         attention = tf.matmul(query, key)
-        attention /= (self.d ** 0.5)
+        attention = attention / tf.sqrt(tf.cast(self.d, attention.dtype))
 
+        # Apply causal mask if needed
         if self.mask:
-            num_step = tf.shape(query)[2]
-            mask = tf.linalg.band_part(tf.ones((num_step, num_step)), -1, 0)
-            mask = tf.cast(mask, dtype=tf.bool)
-            attention = tf.where(mask, attention, -1e9)
+            num_step = ops.shape(query)[2]
+            mask_matrix = tf.linalg.band_part(tf.ones((num_step, num_step), dtype=attention.dtype), -1, 0)
+            mask_bool = tf.cast(mask_matrix, dtype=tf.bool)
+            # Cast constant to match dtype
+            neg_inf = tf.constant(-1e9, dtype=attention.dtype)
+            attention = tf.where(mask_bool, attention, neg_inf)
 
         attention = tf.nn.softmax(attention, axis=-1)
 
+        # Apply attention
         X = tf.matmul(attention, value)
         X = tf.transpose(X, perm=(0, 2, 1, 3))
         X = tf.concat(tf.split(X, self.K, axis=0), axis=-1)
         X = self.fc(X, training=training)
+        
         return X
 
 
-class GatedFusion(Layer):
-    def __init__(self, D, bn=False):
-        super(GatedFusion, self).__init__()
+class GatedFusion(layers.Layer):
+    """Gated fusion mechanism for combining spatial and temporal features"""
+    def __init__(self, D, bn=False, **kwargs):
+        super(GatedFusion, self).__init__(**kwargs)
         self.D = D
         self.fc_xs = FC(D, None, use_bias=False, bn=bn)
         self.fc_xt = FC(D, None, use_bias=True, bn=bn)
@@ -190,15 +227,18 @@ class GatedFusion(Layer):
         XS = self.fc_xs(HS, training=training)
         XT = self.fc_xt(HT, training=training)
         z = tf.nn.sigmoid(tf.add(XS, XT))
-        H = tf.add(tf.multiply(z, HS), tf.multiply(1 - z, HT))
+        # Use tf ops to ensure dtype consistency in mixed precision
+        one = tf.ones_like(z)
+        H = tf.add(tf.multiply(z, HS), tf.multiply(tf.subtract(one, z), HT))
         H = self.fc_h(H, training=training)
         return H
 
 
-class STAttBlock(Layer):
-    def __init__(self, K, d, bn=False):  # ✅ 统一用bn
-        super(STAttBlock, self).__init__()
-        self.spatial_attention = SpatialAttention(K, d, bn=bn)  # ✅ 传递bn
+class STAttBlock(layers.Layer):
+    """Spatial-Temporal Attention Block"""
+    def __init__(self, K, d, bn=False, **kwargs):
+        super(STAttBlock, self).__init__(**kwargs)
+        self.spatial_attention = SpatialAttention(K, d, bn=bn)
         self.temporal_attention = TemporalAttention(K, d, bn=bn)
         self.gated_fusion = GatedFusion(K * d, bn=bn)
 
@@ -209,13 +249,14 @@ class STAttBlock(Layer):
         return tf.add(X, H)
 
 
-class TransformAttention(Layer):
-    def __init__(self, K, d, bn=False):  # ✅ 统一用bn
-        super(TransformAttention, self).__init__()
+class TransformAttention(layers.Layer):
+    """Transform attention for encoder-decoder connection"""
+    def __init__(self, K, d, bn=False, **kwargs):
+        super(TransformAttention, self).__init__(**kwargs)
         self.K = K
         self.d = d
         self.D = K * d
-        self.query = FC(self.D, tf.nn.relu, bn=bn)  # ✅ 传递bn
+        self.query = FC(self.D, tf.nn.relu, bn=bn)
         self.key = FC(self.D, tf.nn.relu, bn=bn)
         self.value = FC(self.D, tf.nn.relu, bn=bn)
         self.fc = FC([self.D, self.D], [tf.nn.relu, None], bn=bn)
@@ -225,26 +266,35 @@ class TransformAttention(Layer):
         key = self.key(STE_P, training=training)
         value = self.value(X, training=training)
 
+        # Multi-head split
         query = tf.concat(tf.split(query, self.K, axis=-1), axis=0)
         key = tf.concat(tf.split(key, self.K, axis=-1), axis=0)
         value = tf.concat(tf.split(value, self.K, axis=-1), axis=0)
 
+        # Transpose for attention
         query = tf.transpose(query, perm=(0, 2, 1, 3))
         key = tf.transpose(key, perm=(0, 2, 3, 1))
         value = tf.transpose(value, perm=(0, 2, 1, 3))
 
+        # Scaled dot-product attention
         attention = tf.matmul(query, key)
-        attention /= (self.d ** 0.5)
+        attention = attention / tf.sqrt(tf.cast(self.d, attention.dtype))
         attention = tf.nn.softmax(attention, axis=-1)
 
+        # Apply attention
         X = tf.matmul(attention, value)
         X = tf.transpose(X, perm=(0, 2, 1, 3))
         X = tf.concat(tf.split(X, self.K, axis=0), axis=-1)
         X = self.fc(X, training=training)
+        
         return X
 
 
-class GMAN(tf.keras.Model):
+class GMAN(keras.Model):
+    """
+    Graph Multi-Attention Network (GMAN) for traffic prediction.
+    Modern TensorFlow 2 / Keras 3 implementation with mixed precision support.
+    """
     def __init__(self, args, SE, mean, std, bn=False, **kwargs):
         super(GMAN, self).__init__(**kwargs)
         self.L = args.L
@@ -253,11 +303,12 @@ class GMAN(tf.keras.Model):
         self.T = 24 * 60 // args.time_slot
         D = args.K * args.d
         
-        # ✅ 关键修复：保存这些属性
+        # Store normalization parameters as constants (float32)
         self.SE = tf.constant(SE, dtype=tf.float32)
         self.mean = tf.constant(mean, dtype=tf.float32)
         self.std = tf.constant(std, dtype=tf.float32)
         
+        # Build model layers
         self.fc_x = FC([D, D], [tf.nn.relu, None], bn=bn)
         self.st_embedding = STEmbedding(D, bn=bn)
         self.encoder = [STAttBlock(args.K, args.d, bn=bn) for _ in range(self.L)]
@@ -266,47 +317,69 @@ class GMAN(tf.keras.Model):
         self.fc_out = FC([D, 1], [tf.nn.relu, None], drop=0.1, bn=bn)
 
     def call(self, inputs, training=None):
+        """Forward pass through the network"""
         X, TE = inputs
+        
+        # Expand dimensions and apply initial transformation
         X = tf.expand_dims(X, axis=-1)
         X = self.fc_x(X, training=training)
 
+        # Generate spatial-temporal embeddings
         STE = self.st_embedding(self.SE, TE, T=self.T, training=training)
         STE_P = STE[:, :self.P]
         STE_Q = STE[:, self.P:]
 
+        # Encoder: process historical data
         for block in self.encoder:
             X = block(X, STE_P, training=training)
 
+        # Transform attention: connect encoder and decoder
         X = self.transform_attention(X, STE_P, STE_Q, training=training)
 
+        # Decoder: generate predictions
         for block in self.decoder:
             X = block(X, STE_Q, training=training)
 
+        # Output layer
         X = self.fc_out(X, training=training)
         return tf.squeeze(X, axis=3)
 
     def train_step(self, data):
+        """Custom training step with mixed precision support"""
         x, y = data
+        
         with tf.GradientTape() as tape:
+            # Forward pass
             y_pred = self(x, training=True)
-            # 反归一化
-            y_pred = y_pred * self.std + self.mean
+            
+            # Denormalize predictions to original scale (float32)
+            y_pred = ops.cast(y_pred, 'float32') * self.std + self.mean
+            y = ops.cast(y, 'float32')
+            
+            # Compute loss
             loss = self.compute_loss(y=y, y_pred=y_pred)
             
-            # 处理混合精度
-            if isinstance(self.optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+            # Handle mixed precision scaling
+            if hasattr(self.optimizer, 'get_scaled_loss'):
                 scaled_loss = self.optimizer.get_scaled_loss(loss)
             else:
                 scaled_loss = loss
         
+        # Compute gradients
         trainable_vars = self.trainable_variables
         gradients = tape.gradient(scaled_loss, trainable_vars)
         
-        if isinstance(self.optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+        # Unscale gradients if using mixed precision
+        if hasattr(self.optimizer, 'get_unscaled_gradients'):
             gradients = self.optimizer.get_unscaled_gradients(gradients)
         
+        # Clip gradients for stability
+        gradients, _ = tf.clip_by_global_norm(gradients, 5.0)
+        
+        # Apply gradients
         self.optimizer.apply_gradients(zip(gradients, trainable_vars))
         
+        # Update metrics
         for metric in self.metrics:
             if metric.name == "loss":
                 metric.update_state(loss)
@@ -316,11 +389,20 @@ class GMAN(tf.keras.Model):
         return {m.name: m.result() for m in self.metrics}
     
     def test_step(self, data):
+        """Custom test step with proper denormalization"""
         x, y = data
+        
+        # Forward pass
         y_pred = self(x, training=False)
-        y_pred = y_pred * self.std + self.mean
+        
+        # Denormalize to original scale
+        y_pred = ops.cast(y_pred, 'float32') * self.std + self.mean
+        y = ops.cast(y, 'float32')
+        
+        # Compute loss
         loss = self.compute_loss(y=y, y_pred=y_pred)
         
+        # Update metrics
         for metric in self.metrics:
             if metric.name == "loss":
                 metric.update_state(loss)
@@ -330,6 +412,16 @@ class GMAN(tf.keras.Model):
         return {m.name: m.result() for m in self.metrics}
     
     def predict_step(self, data):
-        x = data[0]
+        """Custom predict step with denormalization"""
+        if isinstance(data, tuple):
+            x = data[0]
+        else:
+            x = data
+            
+        # Forward pass
         y_pred = self(x, training=False)
-        return y_pred * self.std + self.mean
+        
+        # Denormalize to original scale
+        y_pred = ops.cast(y_pred, 'float32') * self.std + self.mean
+        
+        return y_pred
