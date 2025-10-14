@@ -115,9 +115,13 @@ class STEmbedding(layers.Layer):
         SE = tf.expand_dims(tf.expand_dims(SE, axis=0), axis=0)
         SE = self.fc_se(SE, training=training)
         
-        # Process temporal embedding  
-        dayofweek = tf.one_hot(TE[..., 0], depth=7)
-        timeofday = tf.one_hot(TE[..., 1], depth=T)
+        # Process temporal embedding
+        # CRITICAL: Cast to int32 explicitly to prevent overflow in one_hot
+        day_indices = ops.cast(TE[..., 0], 'int32')
+        time_indices = ops.cast(TE[..., 1], 'int32')
+        
+        dayofweek = tf.one_hot(day_indices, depth=7, dtype=tf.float32)
+        timeofday = tf.one_hot(time_indices, depth=T, dtype=tf.float32)
         TE = tf.concat((dayofweek, timeofday), axis=-1)
         TE = tf.expand_dims(TE, axis=2)
         TE = self.fc_te(TE, training=training)
@@ -199,8 +203,9 @@ class TemporalAttention(layers.Layer):
             num_step = ops.shape(query)[2]
             mask_matrix = tf.linalg.band_part(tf.ones((num_step, num_step), dtype=attention.dtype), -1, 0)
             mask_bool = tf.cast(mask_matrix, dtype=tf.bool)
-            # Cast constant to match dtype
-            neg_inf = tf.constant(-1e9, dtype=attention.dtype)
+            # CRITICAL: Use -65504.0 instead of -1e9 to prevent overflow in float16
+            # Float16 max is ±65504, so -1e9 causes overflow warning
+            neg_inf = tf.constant(-65504.0, dtype=attention.dtype)
             attention = tf.where(mask_bool, attention, neg_inf)
 
         attention = tf.nn.softmax(attention, axis=-1)
@@ -304,9 +309,10 @@ class GMAN(keras.Model):
         D = args.K * args.d
         
         # Store normalization parameters as constants (float32)
+        # CRITICAL: Convert to Python float first to prevent overflow in tf.constant
         self.SE = tf.constant(SE, dtype=tf.float32)
-        self.mean = tf.constant(mean, dtype=tf.float32)
-        self.std = tf.constant(std, dtype=tf.float32)
+        self.mean = tf.constant(float(mean), dtype=tf.float32)
+        self.std = tf.constant(float(std), dtype=tf.float32)
         
         # Build model layers
         self.fc_x = FC([D, D], [tf.nn.relu, None], bn=bn)
