@@ -1,0 +1,12 @@
+{'time_slot': 5, 'P': 12, 'Q': 12, 'L': 5, 'K': 8, 'd': 8, 'train_ratio': 0.7, 'val_ratio': 0.1, 'test_ratio': 0.2, 'batch_size': 32, 'max_epoch': 100, 'patience': 10, 'learning_rate': 0.001, 'decay_epoch': 5, 'traffic_file': './metr-la.h5', 'SE_file': './SE(METR).txt', 'model_file': './models/GMAN.weights.h5', 'log_file': './log/log', 'use_mixed_precision': True}
+Detected 1 GPU device(s)
+  - PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')
+Mixed precision (float16) enabled
+loading data...
+trainX: (23967, 12, 207)	trainY: (23967, 12, 207)
+valX:   (3405, 12, 207)		valY:   (3405, 12, 207)
+testX:  (6831, 12, 207)		testY:  (6831, 12, 207)
+SE:     (207, 64)
+mean: 54.40, std: 19.50
+data loaded!
+building model...
