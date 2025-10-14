@@ -1,0 +1,3 @@
+Namespace(time_slot=5, P=12, Q=12, L=5, K=8, d=8, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2, batch_size=32, traffic_file='../data/METR-LA/metr-la.h5', SE_file='../data/METR-LA/SE(METR).txt', model_file='./models/GMAN.weights.h5', log_file='./log/test_log')
+Model file: ./models/GMAN.weights.h5
+loading data...

@@ -62,7 +62,7 @@ def main():
 
         # tf.data pipeline
         train_ds = tf.data.Dataset.from_tensor_slices(((trainX, trainTE), trainY))
-        train_ds = train_ds.cache().shuffle(buffer_size=2048).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+        train_ds = train_ds.shuffle(buffer_size=2048).cache().batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
         val_ds = tf.data.Dataset.from_tensor_slices(((valX, valTE), valY))
         val_ds = val_ds.cache().batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
         test_ds = tf.data.Dataset.from_tensor_slices(((testX, testTE), testY))
@@ -71,9 +71,9 @@ def main():
         # 混合精度训练：仅在有GPU时启用
         if gpus:
             # log_string(log, '启用混合精度训练（mixed_float16）')
-            # policy = keras.mixed_precision.Policy('mixed_float16')
-            # keras.mixed_precision.set_global_policy(policy)
-            log_string(log, '使用默认精度（float32）')
+            policy = keras.mixed_precision.Policy('mixed_float16')
+            keras.mixed_precision.set_global_policy(policy)
+            log_string(log, '使用混合精度策略: {}'.format(keras.mixed_precision.global_policy().name))
         else:
             log_string(log, '使用默认精度（float32）')
 
@@ -92,7 +92,7 @@ def main():
             staircase=True
         )
 
-        optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=lr_schedule)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
         if gpus and keras.mixed_precision.global_policy().name == 'mixed_float16':
             optimizer = keras.mixed_precision.LossScaleOptimizer(optimizer)

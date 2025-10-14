@@ -1,7 +1,7 @@
 import tensorflow as tf
 print("TensorFlow版本:", tf.__version__)
 print("GPU设备列表:", tf.config.list_physical_devices('GPU'))
-print("CUDA版本:", tf.sysconfig.get_build_info()["cuda_version"])
+# print("CUDA版本:", tf.sysconfig.get_build_info()["cuda_version"])
 print("GPU可用:", tf.test.is_gpu_available())
 print("GPU设备列表:", tf.config.list_physical_devices('GPU'))
 
