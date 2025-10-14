@@ -104,15 +104,11 @@ class MaskedMAELoss(keras.losses.Loss):
         # 为保证精度，损失计算强制使用 float32
         y_true_f32 = ops.cast(y_true, "float32")
         y_pred_f32 = ops.cast(y_pred, "float32")
-
         mask = ops.not_equal(y_true_f32, 0.0)
         mask = ops.cast(mask, "float32")
-
-        mask_sum = ops.sum(mask)
-        mask_sum = ops.maximum(mask_sum, 1.0)
-
+        mask = ops.divide(mask, tf.reduce_mean(mask))
         loss = tf.math.divide(
-            ops.sum(ops.abs(y_pred_f32 - y_true_f32) * mask), mask_sum
+            ops.sum(ops.multiply(ops.abs(y_pred_f32 - y_true_f32), mask)), ops.sum(mask)
         )
 
         # 确保损失值是有限的
