@@ -23,8 +23,8 @@ def main():
     parser.add_argument('--patience', type=int, default=10, help='patience for early stop')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='initial learning rate')
     parser.add_argument('--decay_epoch', type=int, default=5, help='decay epoch')
-    parser.add_argument('--traffic_file', default='../data/METR-LA/metr-la.h5', help='traffic file')
-    parser.add_argument('--SE_file', default='../data/METR-LA/SE(METR).txt', help='spatial embedding file')
+    parser.add_argument('--traffic_file', default='./data/METR-LA/metr-la.h5', help='traffic file')
+    parser.add_argument('--SE_file', default='./data/METR-LA/SE(METR).txt', help='spatial embedding file')
     parser.add_argument('--model_file', default='./models/GMAN.weights.h5', help='save the model to disk')
     parser.add_argument('--log_file', default='./log/log', help='log file')
     parser.add_argument('--use_mixed_precision', type=bool, default=True, help='use mixed precision training')
@@ -64,10 +64,10 @@ def main():
 
         # Modern TF2 data pipeline with optimization
         train_ds = tf.data.Dataset.from_tensor_slices(((trainX, trainTE), trainY))
-        train_ds = train_ds.cache().shuffle(buffer_size=2048).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+        train_ds = train_ds.shuffle(buffer_size=2048).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
         
         val_ds = tf.data.Dataset.from_tensor_slices(((valX, valTE), valY))
-        val_ds = val_ds.cache().batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+        val_ds = val_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
         
         test_ds = tf.data.Dataset.from_tensor_slices(((testX, testTE), testY))
         test_ds = test_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
