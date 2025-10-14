@@ -1,6 +1,6 @@
 import tensorflow as tf
-from keras.layers import Layer, Dropout, BatchNormalization
-import keras
+from tensorflow.keras.layers import Layer, Dropout, BatchNormalization
+
 class FC(Layer):
     """严格按照原版逻辑实现"""
     def __init__(self, units, activations, use_bias=True, drop=None, bn=False):
@@ -20,7 +20,7 @@ class FC(Layer):
         for num_unit, activation in zip(units, activations):
             # Conv层：按传入的use_bias决定
             self.conv_layers.append(
-                keras.layers.Conv2D(
+                tf.keras.layers.Conv2D(
                     filters=num_unit,
                     kernel_size=[1, 1],
                     strides=[1, 1],
@@ -57,7 +57,7 @@ class FC(Layer):
         return x
 
 
-class MaskedMAELoss(keras.losses.Loss):
+class MaskedMAELoss(tf.keras.losses.Loss):
     """修复：添加mask处理的MAE损失"""
     def call(self, y_true, y_pred):
         compute_dtype = y_pred.dtype

@@ -1,4 +1,0 @@
-Namespace(time_slot=5, P=12, Q=12, L=5, K=8, d=8, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2, batch_size=32, max_epoch=100, patience=10, learning_rate=0.001, decay_epoch=5, traffic_file='../data/METR-LA/metr-la.h5', SE_file='../data/METR-LA/SE(METR).txt', model_file='./models/GMAN.weights.h5', log_file='./log/log', use_bn=True)
-检测到 1 个GPU设备
-  - PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')
-loading data...

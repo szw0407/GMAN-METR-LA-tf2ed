@@ -2,7 +2,7 @@ import os
 import argparse
 import numpy as np
 import tensorflow as tf
-import keras
+from tensorflow import keras
 from model import GMAN, MaskedMAELoss
 from utils import load_data, log_string, metric
 

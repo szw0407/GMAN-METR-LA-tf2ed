@@ -109,3 +109,4 @@ gmantf22/log/**
 **/.vscode
 **/.idea
 **/.DS_Store
+log/*

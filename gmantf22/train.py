@@ -2,7 +2,6 @@ import os
 import argparse
 import numpy as np
 import tensorflow as tf
-from tensorflow import keras  # 关键修复：从tf导入keras
 from model import GMAN, MaskedMAELoss
 from utils import load_data, log_string, metric
 
@@ -22,8 +21,8 @@ def main():
     parser.add_argument('--patience', type=int, default=10, help='patience for early stop')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='initial learning rate')
     parser.add_argument('--decay_epoch', type=int, default=5, help='decay epoch')
-    parser.add_argument('--traffic_file', default='../data/METR-LA/metr-la.h5', help='traffic file')
-    parser.add_argument('--SE_file', default='../data/METR-LA/SE(METR).txt', help='spatial embedding file')
+    parser.add_argument('--traffic_file', default='./data/METR-LA/metr-la.h5', help='traffic file')
+    parser.add_argument('--SE_file', default='./data/METR-LA/SE(METR).txt', help='spatial embedding file')
     parser.add_argument('--model_file', default='./models/GMAN.weights.h5', help='save the model to disk')
     parser.add_argument('--log_file', default='./log/log', help='log file')
     parser.add_argument('--use_bn', type=bool, default=True, help='use batch normalization')
@@ -62,20 +61,11 @@ def main():
 
         # tf.data pipeline
         train_ds = tf.data.Dataset.from_tensor_slices(((trainX, trainTE), trainY))
-        train_ds = train_ds.shuffle(buffer_size=2048).cache().batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+        train_ds = train_ds.cache().shuffle(buffer_size=2048).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
         val_ds = tf.data.Dataset.from_tensor_slices(((valX, valTE), valY))
         val_ds = val_ds.cache().batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
         test_ds = tf.data.Dataset.from_tensor_slices(((testX, testTE), testY))
         test_ds = test_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
-
-        # 混合精度训练：仅在有GPU时启用
-        if gpus:
-            # log_string(log, '启用混合精度训练（mixed_float16）')
-            policy = keras.mixed_precision.Policy('mixed_float16')
-            keras.mixed_precision.set_global_policy(policy)
-            log_string(log, '使用混合精度策略: {}'.format(keras.mixed_precision.global_policy().name))
-        else:
-            log_string(log, '使用默认精度（float32）')
 
         log_string(log, 'compiling model...')
         model = GMAN(args, SE, mean, std, bn=True)
@@ -94,14 +84,14 @@ def main():
 
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
-        if gpus and keras.mixed_precision.global_policy().name == 'mixed_float16':
-            optimizer = keras.mixed_precision.LossScaleOptimizer(optimizer)
+        if gpus and tf.keras.mixed_precision.global_policy().name == 'mixed_float16':
+            optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
             log_string(log, '使用LossScaleOptimizer包装优化器')
 
         model.compile(
             optimizer=optimizer, 
             loss=MaskedMAELoss(),
-            metrics=['mae', keras.metrics.RootMeanSquaredError(name='rmse'), 'mape']
+            metrics=['mae', tf.keras.metrics.RootMeanSquaredError(name='rmse'), 'mape']
         )
 
         # 关键修复：通过虚拟前向传播构建模型
@@ -122,12 +112,12 @@ def main():
             log_string(log, 'Model not built yet, parameter count will be available after first epoch')
 
         log_string(log, '**** training model ****')
-        early_stopping_callback = keras.callbacks.EarlyStopping(
+        early_stopping_callback = tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=args.patience,
             restore_best_weights=True
         )
-        model_checkpoint_callback = keras.callbacks.ModelCheckpoint(
+        model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
             filepath=args.model_file,
             save_weights_only=True,
             monitor='val_loss',
@@ -136,10 +126,10 @@ def main():
         )
         
         # 学习率记录回调
-        class LRLogger(keras.callbacks.Callback):
+        class LRLogger(tf.keras.callbacks.Callback):
             def on_epoch_end(self, epoch, logs=None):
                 lr = self.model.optimizer.learning_rate
-                if isinstance(lr, keras.optimizers.schedules.LearningRateSchedule):
+                if isinstance(lr, tf.keras.optimizers.schedules.LearningRateSchedule):
                     lr = lr(self.model.optimizer.iterations)
                 log_string(log, f'epoch {epoch+1}, learning rate: {float(lr):.6f}')
         
