@@ -92,7 +92,11 @@ def main():
 
         test_metrics = model.evaluate(test_ds)
         log_string(log, '                MAE\t\tRMSE\t\tMAPE')
-        log_string(log, f'test             {test_metrics[1]:.2f}\t\t{test_metrics[2]:.2f}\t\t{test_metrics[3] * 100:.2f}%')
+        # 兼容 dict 返回
+        mae = test_metrics['mae'] if 'mae' in test_metrics else list(test_metrics.values())[1]
+        rmse = test_metrics['rmse'] if 'rmse' in test_metrics else list(test_metrics.values())[2]
+        mape = test_metrics['mape'] if 'mape' in test_metrics else list(test_metrics.values())[3]
+        log_string(log, f'test             {mae:.2f}\t\t{rmse:.2f}\t\t{mape * 100:.2f}%')
 
         log_string(log, 'performance in each prediction step')
         test_pred = model.predict(test_ds)

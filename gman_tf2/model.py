@@ -1,6 +1,6 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Layer, Dense, Dropout
-
+from keras.layers import Layer, Dense, Dropout
+import keras
 class FC(Layer):
     def __init__(self, units, activations, use_bias=True, drop=None):
         super(FC, self).__init__()
@@ -12,17 +12,17 @@ class FC(Layer):
             activations = list(activations)
         assert type(units) == list
         self.conv_layers = []
-        for num_unit, activation in zip(units, activations):
-            self.conv_layers.append(
-                tf.keras.layers.Conv2D(
-                    filters=num_unit,
-                    kernel_size=[1, 1],
-                    strides=[1, 1],
-                    padding='VALID',
-                    use_bias=use_bias,
-                    activation=activation
-                )
+        self.conv_layers.extend(
+            keras.layers.Conv2D(
+                filters=num_unit,
+                kernel_size=[1, 1],
+                strides=[1, 1],
+                padding='VALID',
+                use_bias=use_bias,
+                activation=activation,
             )
+            for num_unit, activation in zip(units, activations)
+        )
         self.drop = drop
         if self.drop is not None:
             self.dropout_layer = Dropout(drop)
