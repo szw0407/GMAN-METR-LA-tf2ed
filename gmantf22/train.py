@@ -1,186 +1,241 @@
-import os
-import argparse
+import logging
+from pathlib import Path
+
+import keras
 import numpy as np
 import tensorflow as tf
-import keras
+
 from model import GMAN, MaskedMAELoss
-from utils import load_data, log_string, metric, GMANConfig
-from pydantic import BaseModel, Field
+from utils import GMANConfig, load_data, metric
 
-args = GMANConfig()   # type: ignore
+# Initialize configuration from the utility class
+args = GMANConfig()  # type: ignore
 
 
-def main():  # sourcery skip: extract-method
+def setup_environment(log_file: str, use_mixed_precision: bool):
+    """
+    Configures the runtime environment: logging, GPU, and mixed precision.
+    """
+    # Setup logging
+    Path("log").mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(log_file, mode="w"), logging.StreamHandler()],
+    )
+    logging.info("Logging setup complete.")
+    logging.info(str(args))
 
-    if not os.path.exists("models"):
-        os.makedirs("models")
-    if not os.path.exists("log"):
-        os.makedirs("log")
+    # Configure GPU devices
+    gpus = tf.config.list_physical_devices("GPU")
+    logging.info(f"Detected {len(gpus)} GPU device(s).")
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+        logging.info(f"  - {gpu.name}: Memory growth enabled.")
 
-    with open(args.log_file, "w") as log:
-        log_string(log, str(args))
+    # Configure mixed precision
+    if use_mixed_precision:
+        keras.mixed_precision.set_global_policy("mixed_float16")
+        logging.info("Mixed precision (float16) enabled.")
+    else:
+        logging.info("Using default precision (float32).")
 
-        # Configure GPU - M4 GPU is always available
-        gpus = tf.config.list_physical_devices("GPU")
-        log_string(log, f"Detected {len(gpus)} GPU device(s)")
-        for gpu in gpus:
-            log_string(log, f"  - {gpu}")
-            tf.config.experimental.set_memory_growth(gpu, True)
 
-        # Enable mixed precision for better performance and stability
-        if args.use_mixed_precision:
-            keras.mixed_precision.set_global_policy("mixed_float16")
-            log_string(log, "Mixed precision (float16) enabled")
-        else:
-            log_string(log, "Using default precision (float32)")
+def prepare_datasets(
+    trainX: np.ndarray,
+    trainTE: np.ndarray,
+    trainY: np.ndarray,
+    valX: np.ndarray,
+    valTE: np.ndarray,
+    valY: np.ndarray,
+    testX: np.ndarray,
+    testTE: np.ndarray,
+    testY: np.ndarray,
+    batch_size: int,
+):
+    """
+    Creates tf.data.Dataset pipelines for training, validation, and testing.
+    """
 
-        log_string(log, "loading data...")
-        (
-            trainX,
-            trainTE,
-            trainY,
-            valX,
-            valTE,
-            valY,
-            testX,
-            testTE,
-            testY,
-            SE,
-            mean,
-            std,
-        ) = load_data(args)
-        log_string(log, f"trainX: {trainX.shape}\ttrainY: {trainY.shape}")
-        log_string(log, f"valX:   {valX.shape}\t\tvalY:   {valY.shape}")
-        log_string(log, f"testX:  {testX.shape}\t\ttestY:  {testY.shape}")
-        log_string(log, f"SE:     {SE.shape}")
-        log_string(log, f"mean: {mean:.2f}, std: {std:.2f}")
-        log_string(log, "data loaded!")
+    def create_dataset(X, TE, Y, shuffle=False):
+        ds = tf.data.Dataset.from_tensor_slices(((X, TE), Y))
+        if shuffle:
+            ds = ds.shuffle(buffer_size=2048)
+        return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE).cache()
 
-        # Modern TF2 data pipeline with optimization
-        train_ds = tf.data.Dataset.from_tensor_slices(((trainX, trainTE), trainY))
-        train_ds = (
-            train_ds.shuffle(buffer_size=2048)
-            .batch(args.batch_size)
-            .prefetch(tf.data.AUTOTUNE)
+    train_ds = create_dataset(trainX, trainTE, trainY, shuffle=True)
+    val_ds = create_dataset(valX, valTE, valY)
+    test_ds = create_dataset(testX, testTE, testY)
+
+    logging.info("tf.data.Dataset pipelines created.")
+    return train_ds, val_ds, test_ds
+
+
+def build_and_train_model(
+    model: keras.Model,
+    train_ds: tf.data.Dataset,
+    val_ds: tf.data.Dataset,
+    max_epoch: int,
+    patience: int,
+    model_file: str,
+):
+    """
+    Compiles, trains, and saves the GMAN model.
+    """
+    logging.info("**** Training model ****")
+
+    # Modern callbacks
+    callbacks = [
+        keras.callbacks.EarlyStopping(
+            monitor="val_loss",
+            patience=patience,
+            restore_best_weights=True,
+            verbose=1,
+        ),
+        keras.callbacks.ModelCheckpoint(
+            filepath=model_file,
+            save_weights_only=True,
+            monitor="val_loss",
+            mode="min",
+            save_best_only=True,
+            verbose=1,
+        ),
+        keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss", factor=0.7, patience=3, min_lr=1e-6, verbose=1
+        ),
+    ]
+
+    # Training
+    history = model.fit(
+        train_ds,
+        epochs=max_epoch,
+        validation_data=val_ds,
+        callbacks=callbacks,
+    )
+    logging.info("Model training complete.")
+    return history
+
+
+def evaluate_model(
+    model: keras.Model,
+    test_ds: tf.data.Dataset,
+    testY: np.ndarray,
+    Q: int,
+    model_file: str,
+):
+    """
+    Evaluates the model on the test set and logs the performance.
+    """
+    logging.info("**** Testing model ****")
+    model.load_weights(model_file)
+    logging.info("Best model weights restored for testing.")
+
+    # Perform prediction once
+    test_pred = model.predict(test_ds)
+
+    # Overall performance
+    test_mae, test_rmse, test_mape = metric(test_pred, testY)
+    logging.info("                MAE\t\tRMSE\t\tMAPE")
+    logging.info(
+        f"Overall Test     {test_mae:.2f}\t\t{test_rmse:.2f}\t\t{test_mape * 100:.2f}%"
+    )
+
+    # Per-step performance
+    logging.info("Performance for each prediction step:")
+    mae_steps, rmse_steps, mape_steps = [], [], []
+    for q in range(Q):
+        mae, rmse, mape = metric(test_pred[:, q], testY[:, q])
+        mae_steps.append(mae)
+        rmse_steps.append(rmse)
+        mape_steps.append(mape)
+        logging.info(
+            f"  - Step {q + 1:02d}:    {mae:.2f}\t\t{rmse:.2f}\t\t{mape * 100:.2f}%"
         )
 
-        val_ds = tf.data.Dataset.from_tensor_slices(((valX, valTE), valY))
-        val_ds = val_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+    # Average per-step performance
+    avg_mae = np.mean(mae_steps)
+    avg_rmse = np.mean(rmse_steps)
+    avg_mape = np.mean(mape_steps)
+    logging.info(
+        f"Average Steps:   {avg_mae:.2f}\t\t{avg_rmse:.2f}\t\t{avg_mape * 100:.2f}%"
+    )
 
-        test_ds = tf.data.Dataset.from_tensor_slices(((testX, testTE), testY))
-        test_ds = test_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
 
-        log_string(log, "building model...")
-        model = GMAN(args, SE, mean, std, bn=True)
+def main():
+    """
+    Main function to run the GMAN model training and evaluation pipeline.
+    """
+    Path("models").mkdir(exist_ok=True)
+    setup_environment(args.log_file, args.use_mixed_precision)
 
-        # Modern learning rate schedule
-        num_train = trainX.shape[0]
-        steps_per_epoch = num_train // args.batch_size
-        decay_steps = args.decay_epoch * steps_per_epoch
+    logging.info("Loading data...")
+    (
+        trainX,
+        trainTE,
+        trainY,
+        valX,
+        valTE,
+        valY,
+        testX,
+        testTE,
+        testY,
+        SE,
+        mean,
+        std,
+    ) = load_data(args)
+    logging.info(
+        f"Data loaded. Shapes:\n"
+        f"  trainX: {trainX.shape}, trainY: {trainY.shape}\n"
+        f"  valX:   {valX.shape}, valY:   {valY.shape}\n"
+        f"  testX:  {testX.shape}, testY:  {testY.shape}\n"
+        f"  SE:     {SE.shape}\n"
+        f"  Mean: {mean:.2f}, Std: {std:.2f}"
+    )
 
-        lr_schedule = keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=args.learning_rate,
-            decay_steps=decay_steps,
-            decay_rate=0.7,
-            staircase=True,
-        )
+    train_ds, val_ds, test_ds = prepare_datasets(
+        trainX,
+        trainTE,
+        trainY,
+        valX,
+        valTE,
+        valY,
+        testX,
+        testTE,
+        testY,
+        args.batch_size,
+    )
 
-        # Compile model with modern Keras 3 API
-        model.compile(
-            optimizer = 'adam',
-            loss=MaskedMAELoss(),
-            metrics=[
-                keras.metrics.MeanAbsoluteError(name="mae"),
-                keras.metrics.RootMeanSquaredError(name="rmse"),
-                keras.metrics.MeanAbsolutePercentageError(name="mape"),
-            ],
-        )
+    logging.info("Building model...")
+    model = GMAN(args, SE, mean, std, bn=True)
 
-        # Build model through dummy forward pass
-        log_string(log, "initializing model weights...")
-        try:
-            dummy_batch = next(iter(train_ds.take(1)))
-            _ = model(dummy_batch[0], training=False)
-            total_params = model.count_params()
-            log_string(
-                log,
-                f"Model built successfully with {total_params:,} trainable parameters",
-            )
-        except Exception as e:
-            log_string(log, f"Warning: Could not build model in advance: {e}")
-            log_string(log, "Model will be built during first training step")
+    steps_per_epoch = len(trainX) // args.batch_size
+    lr_schedule = keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=args.learning_rate,
+        decay_steps=args.decay_epoch * steps_per_epoch,
+        decay_rate=0.7,
+        staircase=True,
+    )
 
-        log_string(log, "**** training model ****")
+    # Compile model with modern Keras 3 API
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=lr_schedule, global_clipnorm=5.0),  # type: ignore
+        loss=MaskedMAELoss(),
+        metrics=[
+            keras.metrics.MeanAbsoluteError(name="mae"),
+            keras.metrics.RootMeanSquaredError(name="rmse"),
+            keras.metrics.MeanAbsolutePercentageError(name="mape"),
+        ],
+    )
 
-        # Modern callbacks
-        callbacks = [
-            keras.callbacks.EarlyStopping(
-                monitor="val_loss",
-                patience=args.patience,
-                restore_best_weights=True,
-                verbose=1,
-            ),
-            keras.callbacks.ModelCheckpoint(
-                filepath=args.model_file,
-                save_weights_only=True,
-                monitor="val_loss",
-                mode="min",
-                save_best_only=True,
-                verbose=1,
-            ),
-            keras.callbacks.ReduceLROnPlateau(
-                monitor="val_loss", factor=0.7, patience=3, min_lr=1e-6, verbose=1
-            ),
-        ]
+    build_and_train_model(
+        model, train_ds, val_ds, args.max_epoch, args.patience, args.model_file
+    )
+    # log the model summary
+    model.summary(print_fn=lambda x: logging.info(x))
+    logging.info("Model built and compiled.")
+    evaluate_model(model, test_ds, testY, args.Q, args.model_file)
 
-        # Training
-        history = model.fit(
-            train_ds,
-            epochs=args.max_epoch,
-            validation_data=val_ds,
-            callbacks=callbacks,
-        )
-
-        log_string(log, "**** testing model ****")
-        model.load_weights(args.model_file)
-        log_string(log, "Best model weights restored!")
-        log_string(log, "evaluating on test set...")
-
-        # Test evaluation
-        test_pred = model.predict(test_ds, verbose=0)
-        test_mae, test_rmse, test_mape = metric(
-            test_pred.reshape(-1, args.Q, testY.shape[-1]), testY
-        )
-
-        log_string(log, "                MAE\t\tRMSE\t\tMAPE")
-        log_string(
-            log,
-            f"test             {test_mae:.2f}\t\t{test_rmse:.2f}\t\t{test_mape * 100:.2f}%",
-        )
-
-        # Per-step performance
-        log_string(log, "performance in each prediction step")
-        test_pred = model.predict(test_ds, verbose=0)
-        MAE, RMSE, MAPE = [], [], []
-        for q in range(args.Q):
-            mae, rmse, mape = metric(test_pred[:, q], testY[:, q])
-            MAE.append(mae)
-            RMSE.append(rmse)
-            MAPE.append(mape)
-            log_string(
-                log,
-                f"step: {q + 1:02d}         {mae:.2f}\t\t{rmse:.2f}\t\t{mape * 100:.2f}%",
-            )
-
-        average_mae = np.mean(MAE)
-        average_rmse = np.mean(RMSE)
-        average_mape = np.mean(MAPE)
-        log_string(
-            log,
-            f"average:         {average_mae:.2f}\t\t{average_rmse:.2f}\t\t{average_mape * 100:.2f}%",
-        )
-
-        log_string(log, "Training and evaluation completed successfully!")
+    logging.info("Training and evaluation completed successfully!")
 
 
 if __name__ == "__main__":
