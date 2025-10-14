@@ -4,37 +4,13 @@ import numpy as np
 import tensorflow as tf
 import keras
 from model import GMAN, MaskedMAELoss
-from utils import load_data, log_string, metric
+from utils import load_data, log_string, metric, GMANConfig
 from pydantic import BaseModel, Field
 
+args = GMANConfig()   # type: ignore
 
 
-class GMANConfig(BaseModel):
-    time_slot: int = Field(5, description="time interval")
-    P: int = Field(12, description="history steps")
-    Q: int = Field(12, description="prediction steps")
-    L: int = Field(5, description="number of STAtt Blocks")
-    K: int = Field(8, description="number of attention heads")
-    d: int = Field(8, description="dims of each head attention outputs")
-    train_ratio: float = Field(0.7, description="training set ratio")
-    val_ratio: float = Field(0.1, description="validation set ratio")
-    test_ratio: float = Field(0.2, description="testing set ratio")
-    batch_size: int = Field(48, description="batch size")
-    max_epoch: int = Field(10, description="epoch to run")
-    patience: int = Field(3, description="patience for early stop")
-    learning_rate: float = Field(0.001, description="initial learning rate")
-    decay_epoch: int = Field(5, description="decay epoch")
-    traffic_file: str = Field("./data/METR-LA/metr-la.h5", description="traffic file")
-    SE_file: str = Field("./data/METR-LA/SE(METR).txt", description="spatial embedding file")
-    model_file: str = Field("./models/GMAN.weights.h5", description="save the model to disk")
-    log_file: str = Field("./log/log", description="log file")
-    use_mixed_precision: bool = Field(True, description="use mixed precision training")
-
-
-args = GMANConfig()
-
-
-def main():
+def main():  # sourcery skip: extract-method
 
     if not os.path.exists("models"):
         os.makedirs("models")
@@ -109,17 +85,9 @@ def main():
             staircase=True,
         )
 
-        # Modern optimizer with mixed precision support
-        optimizer = keras.optimizers.Adam(learning_rate=lr_schedule)
-
-        if args.use_mixed_precision:
-            # Wrap optimizer for mixed precision
-            optimizer = keras.mixed_precision.LossScaleOptimizer(optimizer)
-            log_string(log, "Using LossScaleOptimizer for mixed precision")
-
         # Compile model with modern Keras 3 API
         model.compile(
-            optimizer=optimizer,
+            optimizer = 'adam',
             loss=MaskedMAELoss(),
             metrics=[
                 keras.metrics.MeanAbsoluteError(name="mae"),
@@ -171,7 +139,6 @@ def main():
             epochs=args.max_epoch,
             validation_data=val_ds,
             callbacks=callbacks,
-            verbose=1,
         )
 
         log_string(log, "**** testing model ****")
