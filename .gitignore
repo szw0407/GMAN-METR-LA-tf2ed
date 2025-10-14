@@ -110,3 +110,4 @@ gmantf22/log/**
 **/.idea
 **/.DS_Store
 log/*
+logs/*
