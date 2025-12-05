@@ -358,11 +358,6 @@ def main():
     
     # Calculate steps per epoch for learning rate schedule
     steps_per_epoch = len(train_ds)
-    
-    # Display model summary
-    log.info("Model architecture:")
-    model.summary()
-
     # Train and evaluate
     history, log_dir = build_and_train_model(
         log,

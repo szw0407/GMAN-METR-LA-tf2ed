@@ -282,6 +282,14 @@ def main():
     # Get steps per epoch (before summary to avoid build issues)
     steps_per_epoch = len(train_ds)
     
+    # Explicitly build model before summary
+    compute_dtype = tf.float16 if args.use_mixed_precision else tf.float32
+    input_shape = (
+        (args.batch_size, args.P, trainX.shape[-1]),  # X shape
+        (args.batch_size, args.P + args.Q, 2),         # TE shape
+    )
+    model.build(input_shape)
+    
     # Display model summary
     log.info("Model architecture:")
     model.summary()

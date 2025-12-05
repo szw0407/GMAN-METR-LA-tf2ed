@@ -5,7 +5,6 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-import keras
 # keras.mixed_precision.set_global_policy("mixed_float16")
 from config import GMANConfig
 
@@ -159,10 +158,13 @@ def load_data(
     val = Traffic[train_steps : train_steps + val_steps]
     test = Traffic[-test_steps:]
 
-    # Create instances
     trainX, trainY = seq2instance(train, args.P, args.Q)
     valX, valY = seq2instance(val, args.P, args.Q)
     testX, testY = seq2instance(test, args.P, args.Q)
+    
+    print(f"  trainX: {trainX.shape}, trainY: {trainY.shape}")
+    print(f"  valX: {valX.shape}, valY: {valY.shape}")
+    print(f"  testX: {testX.shape}, testY: {testY.shape}")
 
     # Normalize features using TensorFlow operations (GPU-optimized)
     trainX_tensor = tf.constant(trainX, dtype=tf.float32)
@@ -199,21 +201,30 @@ def load_data(
         raise ValueError(f"Error loading or processing SE file '{se_path}': {e}")
 
     # Create temporal embeddings from the DatetimeIndex
-    day_of_week = np.reshape(time_index.weekday, (-1, 1))
-
+    
+    # Convert pandas arrays to TensorFlow tensors for GPU processing
+    weekday = tf.constant(time_index.weekday.values, dtype=tf.int32)
+    hour = tf.constant(time_index.hour.values, dtype=tf.int32)
+    minute = tf.constant(time_index.minute.values, dtype=tf.int32)
+    second = tf.constant(time_index.second.values, dtype=tf.int32)
+    
+    # Compute day_of_week and time_of_day using TensorFlow ops (GPU operations)
+    day_of_week = tf.expand_dims(weekday, axis=1)
+    
     freq_seconds = args.time_slot * 60
-
-    time_of_day = (
-        time_index.hour * 3600 + time_index.minute * 60 + time_index.second
-    ) // freq_seconds
-    time_of_day = np.reshape(time_of_day, (-1, 1))
-
-    TE = np.concatenate((day_of_week, time_of_day), axis=-1).astype(np.int32)
+    time_seconds = hour * 3600 + minute * 60 + second
+    time_of_day = tf.expand_dims(time_seconds // freq_seconds, axis=1)
+    
+    # Concatenate and convert to numpy for seq2instance
+    TE = tf.concat([day_of_week, time_of_day], axis=1)
+    time_slot_max = tf.reduce_max(time_of_day).numpy()
     print(
-        f"Time embedding range - day: [0, 6], time_slot: [0, {int(time_of_day.max())}]"
+        f"Time embedding range - day: [0, 6], time_slot: [0, {int(time_slot_max)}]"
     )
+    TE = TE.numpy().astype(np.int32)
 
-    # Create temporal instances
+    # Create temporal instances (seq2instance will handle GPU operations internally)
+    print("Creating temporal instances...")
     train_te_x, train_te_y = seq2instance(TE[:train_steps], args.P, args.Q)
     train_te = np.concatenate((train_te_x, train_te_y), axis=1)
 
