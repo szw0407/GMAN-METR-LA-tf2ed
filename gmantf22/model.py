@@ -15,7 +15,6 @@ class FC(layers.Layer):
     def __init__(
         self, units, activations, use_bias=True, drop=None, bn=False, **kwargs
     ):
-        # --- 优化点 2: 使用现代的 super() 语法 ---
         super().__init__(**kwargs)
         if isinstance(units, int):
             units = [units]
@@ -73,12 +72,13 @@ class FC(layers.Layer):
 
     def get_config(self):
         config = super().get_config()
-        # 将构造函数参数保存到配置中
+        # 将构造函数参数保存到配置中，使用 Keras 3 序列化方式
         config.update(
             {
                 "units": [layer.filters for layer in self.conv_layers],
                 "activations": [
-                    keras.activations.serialize(act) for act in self.activations
+                    keras.activations.serialize(act) if act is not None else None 
+                    for act in self.activations
                 ],
                 "use_bias": any(layer.use_bias for layer in self.conv_layers),
                 "drop": self.drop_rate,

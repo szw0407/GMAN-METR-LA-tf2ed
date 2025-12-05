@@ -4,9 +4,9 @@ from typing import Tuple
 
 import numpy as np
 import pandas as pd
-
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
+import tensorflow as tf
+import keras
+# keras.mixed_precision.set_global_policy("mixed_float16")
 from config import GMANConfig
 
 def log_string(log: logging.Logger, string: str):
@@ -19,33 +19,52 @@ def log_string(log: logging.Logger, string: str):
 
 def metric(pred: np.ndarray, label: np.ndarray) -> Tuple[float, float, float]:
     """
-    Calculate performance metrics: MAE, RMSE, MAPE.
+    Calculate performance metrics: MAE, RMSE, MAPE using TensorFlow ops (GPU-accelerated).
     This function replicates the original's masking behavior for zero values in labels.
+    
+    Args:
+        pred: Prediction array (can be numpy or tensor)
+        label: Ground truth array (can be numpy or tensor)
+    
+    Returns:
+        Tuple of (MAE, RMSE, MAPE) as Python floats
     """
-    # Mask for non-zero labels, crucial for traffic data where 0 indicates no data.
-    mask = label != 0
+    # Convert to tensors on GPU with float32 precision
+    pred = tf.cast(pred, tf.float32)
+    label = tf.cast(label, tf.float32)
 
-    # If all labels are zero, metrics are undefined and should be 0.
-    if not np.any(mask):
+    # Create mask for non-zero labels (GPU operation)
+    mask = tf.not_equal(label, 0.0)
+
+    # If all labels are zero, metrics are undefined and should be 0
+    if not tf.reduce_any(mask):
         return 0.0, 0.0, 0.0
 
-    # Filter out the zero-valued data points from both prediction and label
-    pred_masked = pred[mask]
-    label_masked = label[mask]
+    # Filter out the zero-valued data points using mask (GPU operation)
+    pred_masked = tf.boolean_mask(pred, mask)
+    label_masked = tf.boolean_mask(label, mask)
 
-    # Calculate metrics using the masked data
-    mae = mean_absolute_error(label_masked, pred_masked)
-    rmse = np.sqrt(mean_squared_error(label_masked, pred_masked))
+    # Calculate MAE using TensorFlow (GPU-accelerated)
+    mae = tf.reduce_mean(tf.abs(label_masked - pred_masked))
+    
+    # Calculate RMSE using TensorFlow (GPU-accelerated)
+    mse = tf.reduce_mean(tf.square(label_masked - pred_masked))
+    rmse = tf.sqrt(mse)
 
-    # MAPE calculation, avoiding division by zero.
-    mape = np.mean(np.abs(np.divide(label_masked - pred_masked, label_masked)))
+    # MAPE calculation using TensorFlow, avoiding division by zero
+    mape = tf.reduce_mean(tf.abs((label_masked - pred_masked) / label_masked))
 
-    return float(mae), float(rmse), float(mape)
+    # Convert results to Python floats
+    return float(mae.numpy()), float(rmse.numpy()), float(mape.numpy())
 
 
 def seq2instance(data: np.ndarray, P: int, Q: int) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convert sequence data into instances for training/testing.
+    Convert sequence data into instances for training/testing using TensorFlow strided_slice (GPU-optimized).
+    
+    This implementation uses TensorFlow operations to create sliding windows efficiently,
+    avoiding explicit Python loops that would be executed on CPU.
+    
     :param data: sequence data of shape (num_step, dims).
     :param P: history steps.
     :param Q: prediction steps.
@@ -58,12 +77,22 @@ def seq2instance(data: np.ndarray, P: int, Q: int) -> Tuple[np.ndarray, np.ndarr
             f"Not enough data to create samples. Required {P + Q} steps, but got {num_step}."
         )
 
-    x = np.zeros((num_sample, P, dims))
-    y = np.zeros((num_sample, Q, dims))
-    for i in range(num_sample):
-        x[i] = data[i : i + P]
-        y[i] = data[i + P : i + P + Q]
-    return x, y
+    # Convert to TensorFlow constant for GPU operations
+    data_tensor = tf.constant(data, dtype=tf.float32)
+    
+    # Create index arrays for efficient slicing
+    # Each sample i will have indices [i, i+1, ..., i+P+Q-1]
+    indices = tf.range(num_sample)[:, tf.newaxis] + tf.range(P + Q)[tf.newaxis, :]
+    
+    # Use gather to extract all windows at once (GPU operation)
+    windows = tf.gather(data_tensor, indices)  # shape: (num_sample, P+Q, dims)
+    
+    # Split into x and y
+    x = windows[:, :P, :]      # shape: (num_sample, P, dims)
+    y = windows[:, P:, :]      # shape: (num_sample, Q, dims)
+    
+    # Convert to numpy arrays
+    return x.numpy(), y.numpy()
 
 
 def load_data(
@@ -131,23 +160,34 @@ def load_data(
     valX, valY = seq2instance(val, args.P, args.Q)
     testX, testY = seq2instance(test, args.P, args.Q)
 
-    # Normalize features using training set statistics
-    mean, std = np.mean(trainX), np.std(trainX)
-    std = np.maximum(std, 1e-5)  # Avoid division by zero
-
-    trainX = (trainX - mean) / std
-    valX = (valX - mean) / std
-    testX = (testX - mean) / std
+    # Normalize features using TensorFlow operations (GPU-optimized)
+    trainX_tensor = tf.constant(trainX, dtype=tf.float32)
+    mean = tf.reduce_mean(trainX_tensor)
+    std = tf.math.reduce_std(trainX_tensor)
+    std = tf.maximum(std, 1e-5)  # Avoid division by zero
+    
+    # Apply normalization using TensorFlow (GPU operation)
+    trainX = ((tf.constant(trainX, dtype=tf.float32) - mean) / std).numpy()
+    valX = ((tf.constant(valX, dtype=tf.float32) - mean) / std).numpy()
+    testX = ((tf.constant(testX, dtype=tf.float32) - mean) / std).numpy()
+    
+    mean = float(mean.numpy())
+    std = float(std.numpy())
 
     # Load and normalize spatial embeddings
     try:
-        # Use np.loadtxt for efficient parsing of the text file
+        # Use np.loadtxt for efficient parsing of the text file (required for file I/O)
         SE = np.loadtxt(se_path, skiprows=1)[:, 1:].astype(np.float32)
 
-        # Normalize SE for stability
-        se_mean, se_std = np.mean(SE), np.std(SE)
-        se_std = np.maximum(se_std, 1e-5)
-        SE = (SE - se_mean) / se_std
+        # Normalize SE using TensorFlow (GPU-optimized)
+        SE_tensor = tf.constant(SE, dtype=tf.float32)
+        se_mean = tf.reduce_mean(SE_tensor)
+        se_std = tf.math.reduce_std(SE_tensor)
+        se_std = tf.maximum(se_std, 1e-5)
+        
+        SE = ((SE_tensor - se_mean) / se_std).numpy()
+        se_mean = float(se_mean.numpy())
+        se_std = float(se_std.numpy())
 
         print(f"Loaded spatial embedding: {SE.shape}")
         print(f"SE normalized - mean: {se_mean:.4f}, std: {se_std:.4f}")
