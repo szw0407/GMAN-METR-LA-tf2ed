@@ -151,13 +151,7 @@ def build_and_train_model(
             save_best_only=True,
             verbose=1,
         ),
-        keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss",
-            factor=0.7,
-            patience=3,
-            min_lr=1e-6,
-            verbose=1,
-        ),
+        # Note: Learning rate is controlled by ExponentialDecay schedule, not ReduceLROnPlateau
         keras.callbacks.TensorBoard(
             log_dir=log_dir,
             histogram_freq=1,
