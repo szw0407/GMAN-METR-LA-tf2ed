@@ -18,7 +18,7 @@ class GMANConfigQuick(BaseModel):
     val_ratio: float = Field(0.1, description="validation set ratio")
     test_ratio: float = Field(0.2, description="testing set ratio")
     # --- 加大 batch size ---
-    batch_size: int = Field(32, description="batch size - INCREASED from 12")
+    batch_size: int = Field(84, description="batch size - INCREASED from 12")
     # --- 短期训练 ---
     max_epoch: int = Field(50, description="epoch to run - REDUCED for quick testing")
     patience: int = Field(8, description="patience for early stop")
