@@ -51,8 +51,12 @@ def metric(pred: np.ndarray, label: np.ndarray) -> Tuple[float, float, float]:
     mse = tf.reduce_mean(tf.square(label_masked - pred_masked))
     rmse = tf.sqrt(mse)
 
-    # MAPE calculation using TensorFlow, avoiding division by zero
-    mape = tf.reduce_mean(tf.abs((label_masked - pred_masked) / label_masked))
+    # MAPE calculation with epsilon to prevent division by zero and clipping to prevent overflow
+    # Add epsilon to denominator to avoid division by very small numbers
+    epsilon = 1e-3  # 防止除以接近零的流量值
+    mape = tf.reduce_mean(tf.abs((label_masked - pred_masked) / tf.maximum(label_masked, epsilon)))
+    # Clip MAPE to reasonable range (0-2 means 0-200%) to prevent overflow in mixed precision
+    mape = tf.clip_by_value(mape, 0.0, 2.0)
 
     # Convert results to Python floats
     return float(mae.numpy()), float(rmse.numpy()), float(mape.numpy())

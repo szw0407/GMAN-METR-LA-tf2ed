@@ -18,7 +18,7 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-from model import GMAN, MaskedMAELoss
+from model import GMAN, MaskedMAELoss, MaskedMAE, MaskedRMSE, MaskedMAPE
 from utils import load_data, metric
 from config import GMANConfig
 
@@ -49,6 +49,14 @@ def setup_environment(log_file: str, use_mixed_precision: bool):
         tf.config.experimental.set_memory_growth(gpu, True)
         log.info(f"  - {gpu.name}: Memory growth enabled.")
 
+    # Enable XLA when requested (can increase memory; configurable)
+    if args.enable_xla:
+        tf.config.optimizer.set_jit(True)
+        log.info("XLA JIT enabled.")
+    else:
+        tf.config.optimizer.set_jit(False)
+        log.info("XLA JIT disabled (set enable_xla=True to re-enable).")
+
     # Configure mixed precision (Keras 3 automatically handles this)
     if use_mixed_precision:
         keras.mixed_precision.set_global_policy("mixed_float16")
@@ -70,42 +78,49 @@ def prepare_datasets(
     testTE: np.ndarray,
     testY: np.ndarray,
     batch_size: int,
+    use_mixed_precision: bool,
     log: logging.Logger,
 ):
     """
     Creates tf.data.Dataset pipelines for training, validation, and testing.
-    Optimized for GPU performance with prefetching, caching, and parallel processing.
+    Optimized for GPU performance with prefetching and parallel processing while
+    keeping memory usage low (no in-memory caching of full datasets).
     """
 
-    def create_dataset(X, TE, Y, shuffle=False, cache_data=False):
+    compute_dtype = tf.float16 if use_mixed_precision else tf.float32
+
+    def create_dataset(X, TE, Y, shuffle=False):
         # Convert to TensorFlow constants on GPU
         ds = tf.data.Dataset.from_tensor_slices(((X, TE), Y))
-        
-        # Shuffle training data
+
         if shuffle:
-            ds = ds.shuffle(buffer_size=min(2048, len(X)))
-        
-        # Batch the data
-        ds = ds.batch(batch_size, drop_remainder=False)
-        
-        # Cache for training data (will be read multiple times per epoch)
-        # For val/test, caching is not necessary
-        if cache_data:
-            ds = ds.cache()
-        
-        # Parallel prefetching for GPU pipeline optimization
-        # AUTOTUNE automatically selects the number of prefetch threads
+            ds = ds.shuffle(buffer_size=min(2 * batch_size, len(X)))
+
+        ds = ds.batch(batch_size, drop_remainder=True)
+
+        # Cast heavy tensors to the compute dtype to cut GPU memory usage
+        ds = ds.map(
+            lambda features, label: (
+                (tf.cast(features[0], compute_dtype), features[1]),
+                tf.cast(label, compute_dtype),
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+
+        # Lightweight tf.data optimizations
+        options = tf.data.Options()
+        ds = ds.with_options(options)
         ds = ds.prefetch(tf.data.AUTOTUNE)
-        
+
         return ds
 
-    train_ds = create_dataset(trainX, trainTE, trainY, shuffle=True, cache_data=True)
-    val_ds = create_dataset(valX, valTE, valY, cache_data=False)
-    test_ds = create_dataset(testX, testTE, testY, cache_data=False)
+    train_ds = create_dataset(trainX, trainTE, trainY, shuffle=True)
+    val_ds = create_dataset(valX, valTE, valY, shuffle=False)
+    test_ds = create_dataset(testX, testTE, testY, shuffle=False)
 
     log.info("tf.data.Dataset pipelines created and GPU-optimized:")
-    log.info("  - Shuffle buffer enabled for training")
-    log.info("  - Cache layer enabled for training data (read per epoch)")
+    log.info("  - Moderate shuffle buffer to avoid RAM spikes")
+    log.info("  - No dataset cache (prevents large host/GPU allocations)")
     log.info("  - AUTOTUNE prefetching enabled for GPU pipeline optimization")
     
     return train_ds, val_ds, test_ds
@@ -146,15 +161,18 @@ def build_and_train_model(
         ),  # type: ignore
         loss=MaskedMAELoss(),
         metrics=[
-            keras.metrics.MeanAbsoluteError(name="mae"),
-            keras.metrics.RootMeanSquaredError(name="rmse"),
-            keras.metrics.MeanAbsolutePercentageError(name="mape"),
+            MaskedMAE(),      # 使用与loss相同的掩码逻辑
+            MaskedRMSE(),     # 掩码RMSE
+            MaskedMAPE(),     # 掩码MAPE，带epsilon和裁剪
         ],
     )
 
     # TensorBoard callback with modern Keras 3 support
     log_dir = f"logs/fit/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     Path(log_dir).mkdir(parents=True, exist_ok=True)
+    
+    log.info(f"TensorBoard logs will be saved to: {log_dir}")
+    log.info(f"To visualize training, run: tensorboard --logdir=logs/fit")
 
     callbacks = [
         # Early stopping with best weight restoration
@@ -265,20 +283,18 @@ def evaluate_model(
         f"Overall Test     {test_mae:.2f}\t\t{test_rmse:.2f}\t\t{test_mape * 100:.2f}%"
     )
 
-    # Per-step performance using TensorFlow operations (GPU-accelerated)
-    log.info("Performance for each prediction step:")
-    
-    # Convert to tensors for batch GPU processing
-    test_pred_tensor = tf.constant(test_pred, dtype=tf.float32)
-    testY_tensor = tf.constant(testY, dtype=tf.float32)
-    
-    # Extract per-step metrics using TensorFlow slicing (GPU operation)
+    # Per-step performance on GPU
+    log.info("Performance for each prediction step (GPU):")
+
+    test_pred_tensor = tf.convert_to_tensor(test_pred)
+    testY_tensor = tf.convert_to_tensor(testY)
+
     mae_steps = []
     rmse_steps = []
     mape_steps = []
-    
+
     for q in range(Q):
-        mae, rmse, mape = metric(test_pred_tensor[:, q].numpy(), testY_tensor[:, q].numpy())
+        mae, rmse, mape = metric(test_pred_tensor[:, q], testY_tensor[:, q])
         mae_steps.append(mae)
         rmse_steps.append(rmse)
         mape_steps.append(mape)
@@ -286,10 +302,10 @@ def evaluate_model(
             f"  - Step {q + 1:02d}:    {mae:.2f}\t\t{rmse:.2f}\t\t{mape * 100:.2f}%"
         )
 
-    # Average per-step performance using TensorFlow (GPU-accelerated)
     avg_mae = float(tf.reduce_mean(tf.constant(mae_steps, dtype=tf.float32)).numpy())
     avg_rmse = float(tf.reduce_mean(tf.constant(rmse_steps, dtype=tf.float32)).numpy())
     avg_mape = float(tf.reduce_mean(tf.constant(mape_steps, dtype=tf.float32)).numpy())
+
     log.info(
         f"Average Steps:   {avg_mae:.2f}\t\t{avg_rmse:.2f}\t\t{avg_mape * 100:.2f}%"
     )
@@ -339,6 +355,7 @@ def main():
         testTE,
         testY,
         args.batch_size,
+        args.use_mixed_precision,
         log,
     )
 
@@ -347,7 +364,11 @@ def main():
     model = GMAN(args, SE, mean, std, bn=True)
     
     # Calculate steps per epoch for learning rate schedule
-    steps_per_epoch = len(trainX) // args.batch_size
+    steps_per_epoch = len(train_ds)
+    
+    # Display model summary
+    log.info("Model architecture:")
+    model.summary()
 
     # Train and evaluate
     history, log_dir = build_and_train_model(

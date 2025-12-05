@@ -106,16 +106,116 @@ class MaskedMAELoss(keras.losses.Loss):
         y_pred_f32 = ops.cast(y_pred, "float32")
         mask = ops.not_equal(y_true_f32, 0.0)
         mask = ops.cast(mask, "float32")
-        mask = ops.divide(mask, tf.reduce_mean(mask))
-        loss = tf.math.divide(
-            ops.sum(ops.multiply(ops.abs(y_pred_f32 - y_true_f32), mask)), ops.sum(mask)
-        )
+        
+        # 改进掩码归一化，避免除以过小值
+        mask_mean = tf.reduce_mean(mask)
+        mask_mean = tf.maximum(mask_mean, 1e-5)  # 防止除零
+        mask = ops.divide(mask, mask_mean)
+        
+        # 计算掩码MAE
+        masked_error = ops.multiply(ops.abs(y_pred_f32 - y_true_f32), mask)
+        mask_sum = tf.maximum(ops.sum(mask), 1.0)  # 防止除零
+        loss = ops.divide(ops.sum(masked_error), mask_sum)
+        
+        # 裁剪损失到合理范围，防止梯度爆炸
+        loss = tf.clip_by_value(loss, 0.0, 1000.0)
 
         # 确保损失值是有限的
         return ops.where(ops.isfinite(loss), loss, 0.0)
 
     def get_config(self):
         return super().get_config()
+
+
+@keras.saving.register_keras_serializable()
+class MaskedMAE(keras.metrics.Metric):
+    """带掩码的MAE指标，与MaskedMAELoss使用相同的掩码逻辑"""
+    
+    def __init__(self, name="masked_mae", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total = self.add_weight(name="total", initializer="zeros", dtype="float32")
+        self.count = self.add_weight(name="count", initializer="zeros", dtype="float32")
+    
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = ops.cast(y_true, "float32")
+        y_pred = ops.cast(y_pred, "float32")
+        
+        mask = ops.not_equal(y_true, 0.0)
+        mask = ops.cast(mask, "float32")
+        
+        masked_error = ops.multiply(ops.abs(y_pred - y_true), mask)
+        self.total.assign_add(ops.sum(masked_error))
+        self.count.assign_add(ops.sum(mask))
+    
+    def result(self):
+        return ops.divide(self.total, tf.maximum(self.count, 1.0))
+    
+    def reset_state(self):
+        self.total.assign(0.0)
+        self.count.assign(0.0)
+
+
+@keras.saving.register_keras_serializable()
+class MaskedRMSE(keras.metrics.Metric):
+    """带掩码的RMSE指标"""
+    
+    def __init__(self, name="masked_rmse", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total = self.add_weight(name="total", initializer="zeros", dtype="float32")
+        self.count = self.add_weight(name="count", initializer="zeros", dtype="float32")
+    
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = ops.cast(y_true, "float32")
+        y_pred = ops.cast(y_pred, "float32")
+        
+        mask = ops.not_equal(y_true, 0.0)
+        mask = ops.cast(mask, "float32")
+        
+        squared_error = ops.multiply(ops.square(y_pred - y_true), mask)
+        self.total.assign_add(ops.sum(squared_error))
+        self.count.assign_add(ops.sum(mask))
+    
+    def result(self):
+        mse = ops.divide(self.total, tf.maximum(self.count, 1.0))
+        return ops.sqrt(mse)
+    
+    def reset_state(self):
+        self.total.assign(0.0)
+        self.count.assign(0.0)
+
+
+@keras.saving.register_keras_serializable()
+class MaskedMAPE(keras.metrics.Metric):
+    """带掩码的MAPE指标，与utils.metric()使用相同逻辑"""
+    
+    def __init__(self, name="masked_mape", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total = self.add_weight(name="total", initializer="zeros", dtype="float32")
+        self.count = self.add_weight(name="count", initializer="zeros", dtype="float32")
+    
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = ops.cast(y_true, "float32")
+        y_pred = ops.cast(y_pred, "float32")
+        
+        mask = ops.not_equal(y_true, 0.0)
+        mask = ops.cast(mask, "float32")
+        
+        # 添加epsilon防止除以接近零的值
+        epsilon = 1e-3
+        percentage_error = ops.abs((y_pred - y_true) / tf.maximum(y_true, epsilon))
+        masked_error = ops.multiply(percentage_error, mask)
+        
+        self.total.assign_add(ops.sum(masked_error))
+        self.count.assign_add(ops.sum(mask))
+    
+    def result(self):
+        mape = ops.divide(self.total, tf.maximum(self.count, 1.0))
+        # 裁剪到合理范围防止溢出
+        return tf.clip_by_value(mape, 0.0, 2.0)
+    
+    def reset_state(self):
+        self.total.assign(0.0)
+        self.count.assign(0.0)
 
 
 @keras.saving.register_keras_serializable()
@@ -459,6 +559,16 @@ class GMAN(keras.Model):
         self.transform_attention = TransformAttention(args.K, args.d, bn=bn)
         self.decoder = [STAttBlock(args.K, args.d, bn=bn) for _ in range(self.L)]
         self.fc_out = FC([D, 1], ["relu", None], drop=0.1, bn=bn)
+        self._build_shape = None
+
+    def build(self, input_shape):
+        """构建模型层的形状信息"""
+        if not self.built:
+            # 构建输入层
+            # input_shape: ((batch, P, N), (batch, P+Q, 2))
+            # 运行一次前向传播以初始化所有层
+            self._build_shape = input_shape
+            super().build(input_shape)
 
     def call(self, inputs, training=None):
         """模型前向传播（保持不变）"""
@@ -501,6 +611,12 @@ class GMAN(keras.Model):
         # 直接在原始 loss 上计算梯度
         trainable_vars = self.trainable_variables
         gradients = tape.gradient(loss, trainable_vars)
+        
+        # 检查梯度是否有效（防止NaN传播）
+        gradients = [
+            tf.where(tf.math.is_finite(g), g, tf.zeros_like(g)) if g is not None else None
+            for g in gradients
+        ]
 
         # 应用梯度。优化器会自动处理梯度的反缩放和裁剪
         self.optimizer.apply_gradients(zip(gradients, trainable_vars))  # type: ignore

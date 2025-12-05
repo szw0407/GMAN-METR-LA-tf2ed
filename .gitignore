@@ -111,3 +111,4 @@ gmantf22/log/**
 **/.DS_Store
 log/*
 logs/*
+models/*
