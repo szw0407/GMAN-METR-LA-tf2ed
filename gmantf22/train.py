@@ -198,7 +198,8 @@ def build_and_train_model(
     # TensorBoard callback with modern Keras 3 support
     log_dir = f"logs/fit/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     Path(log_dir).mkdir(parents=True, exist_ok=True)
-    tf.debugging.experimental.enable_dump_debug_info(log_dir, tensor_debug_mode="FULL_HEALTH", circular_buffer_size=-1)
+    if not args.enable_xla:
+        tf.debugging.experimental.enable_dump_debug_info(log_dir, tensor_debug_mode="FULL_HEALTH", circular_buffer_size=-1)
     log.info(f"TensorBoard logs will be saved to: {log_dir}")
     log.info(f"To visualize training, run: tensorboard --logdir=logs/fit")
 

@@ -161,7 +161,8 @@ def build_and_train_model(
     
     log.info(f"TensorBoard logs: {log_dir}")
     log.info(f"Command: tensorboard --logdir=logs/fit_quick")
-    tf.debugging.experimental.enable_dump_debug_info(log_dir, tensor_debug_mode="FULL_HEALTH", circular_buffer_size=-1)
+    # if not args.enable_xla:
+    #     tf.debugging.experimental.enable_dump_debug_info(log_dir, tensor_debug_mode="FULL_HEALTH", circular_buffer_size=-1)
 
     # Create a summary writer for hyperparameter logging
     summary_writer = tf.summary.create_file_writer(log_dir)
