@@ -31,7 +31,33 @@ def setup_environment(log_file: str, use_mixed_precision: bool):
     log.info("=" * 80)
     log.info("QUICK TRAINING MODE - Simplified model for rapid iteration")
     log.info("=" * 80)
-    log.info(str(args))
+    log.info("GMAN MODEL CONFIGURATION (QUICK MODE)")
+    log.info("=" * 80)
+    log.info(f"Model Architecture:")
+    log.info(f"  - L (STAtt Blocks): {args.L}")
+    log.info(f"  - K (Attention Heads): {args.K}")
+    log.info(f"  - d (Head Output Dims): {args.d}")
+    log.info(f"Temporal Configuration:")
+    log.info(f"  - P (History Steps): {args.P}")
+    log.info(f"  - Q (Prediction Steps): {args.Q}")
+    log.info(f"  - Time Slot (minutes): {args.time_slot}")
+    log.info(f"Training Configuration:")
+    log.info(f"  - Batch Size: {args.batch_size}")
+    log.info(f"  - Learning Rate: {args.learning_rate}")
+    log.info(f"  - Decay Epoch: {args.decay_epoch}")
+    log.info(f"  - Max Epoch: {args.max_epoch}")
+    log.info(f"  - Patience (Early Stop): {args.patience}")
+    log.info(f"Data Configuration:")
+    log.info(f"  - Train/Val/Test Split: {args.train_ratio}/{args.val_ratio}/{args.test_ratio}")
+    log.info(f"  - Traffic File: {args.traffic_file}")
+    log.info(f"  - SE File: {args.SE_file}")
+    log.info(f"Optimization Flags:")
+    log.info(f"  - Mixed Precision: {args.use_mixed_precision}")
+    log.info(f"  - XLA JIT: {args.enable_xla}")
+    log.info(f"Output Files:")
+    log.info(f"  - Model File: {args.model_file}")
+    log.info(f"  - Log File: {args.log_file}")
+    log.info("=" * 80)
 
     gpus = tf.config.list_physical_devices("GPU")
     log.info(f"Detected {len(gpus)} GPU device(s).")
@@ -135,6 +161,40 @@ def build_and_train_model(
     
     log.info(f"TensorBoard logs: {log_dir}")
     log.info(f"Command: tensorboard --logdir=logs/fit_quick")
+    tf.debugging.experimental.enable_dump_debug_info(log_dir, tensor_debug_mode="FULL_HEALTH", circular_buffer_size=-1)
+
+    # Create a summary writer for hyperparameter logging
+    summary_writer = tf.summary.create_file_writer(log_dir)
+
+    # Log all hyperparameters from config to TensorBoard
+    with summary_writer.as_default():
+        # Model architecture hyperparameters
+        tf.summary.scalar('hparams/L_num_statt_blocks', args.L, step=0)
+        tf.summary.scalar('hparams/K_num_attention_heads', args.K, step=0)
+        tf.summary.scalar('hparams/d_head_output_dims', args.d, step=0)
+        
+        # Temporal hyperparameters
+        tf.summary.scalar('hparams/P_history_steps', args.P, step=0)
+        tf.summary.scalar('hparams/Q_prediction_steps', args.Q, step=0)
+        tf.summary.scalar('hparams/time_slot_minutes', args.time_slot, step=0)
+        
+        # Training hyperparameters
+        tf.summary.scalar('hparams/batch_size', args.batch_size, step=0)
+        tf.summary.scalar('hparams/learning_rate', args.learning_rate, step=0)
+        tf.summary.scalar('hparams/decay_epoch', args.decay_epoch, step=0)
+        tf.summary.scalar('hparams/max_epoch', args.max_epoch, step=0)
+        tf.summary.scalar('hparams/patience_early_stop', args.patience, step=0)
+        
+        # Data split ratios
+        tf.summary.scalar('hparams/train_ratio', args.train_ratio, step=0)
+        tf.summary.scalar('hparams/val_ratio', args.val_ratio, step=0)
+        tf.summary.scalar('hparams/test_ratio', args.test_ratio, step=0)
+        
+        # Optimization flags
+        tf.summary.scalar('hparams/use_mixed_precision', float(args.use_mixed_precision), step=0)
+        tf.summary.scalar('hparams/enable_xla', float(args.enable_xla), step=0)
+    
+    log.info("Hyperparameters logged to TensorBoard")
 
     callbacks = [
         keras.callbacks.EarlyStopping(
@@ -154,9 +214,12 @@ def build_and_train_model(
         # Note: Learning rate is controlled by ExponentialDecay schedule, not ReduceLROnPlateau
         keras.callbacks.TensorBoard(
             log_dir=log_dir,
-            histogram_freq=1,
-            write_graph=False,  # Disable for quick mode
-            update_freq="epoch",
+            histogram_freq=1,        # Log weight histograms every epoch
+            write_graph=True,        # Write model graph
+            write_images=True,       # Visualize model weights as images
+            update_freq='epoch',     # Update metrics every epoch
+            profile_batch="5,10",    # Profile batches 5-10 for performance analysis
+            embeddings_freq=1,       # Log embeddings every epoch
         ),
     ]
 
