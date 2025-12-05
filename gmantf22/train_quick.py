@@ -217,7 +217,7 @@ def build_and_train_model(
             histogram_freq=1,        # Log weight histograms every epoch
             write_graph=True,        # Write model graph
             write_images=True,       # Visualize model weights as images
-            update_freq='epoch',     # Update metrics every epoch
+            update_freq='batch',     # Update metrics every epoch
             profile_batch="5,10",    # Profile batches 5-10 for performance analysis
             embeddings_freq=1,       # Log embeddings every epoch
         ),
